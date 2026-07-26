@@ -1561,7 +1561,7 @@ async function renderEntryView(){
       <div id="entryStatusBanner" class="mt-8"></div>
 
       <div class="tabs mt-8" id="catTabs">
-        ${['FRESH','TRANSFER','NONFRESH'].map(c=>`
+        ${['FRESH','TRANSFER'].map(c=>`
           <div class="tab ${c===CURRENT_CAT?'active':''} ${DIRTY[c]?'dirty':''}" data-cat="${c}">
             ${CAT_LABELS[c]} <span class="dot"></span>
           </div>`).join('')}
@@ -2549,7 +2549,7 @@ async function loadOverviewStats(){
   let grandAmount = 0;
   storeCodes.forEach(code=>{
     const rec = data[code];
-    ['FRESH','TRANSFER','NONFRESH'].forEach(cat=>{
+    ['FRESH','TRANSFER'].forEach(cat=>{
       const catData = rec[cat];
       if(!catData) return;
       Object.entries(catData).forEach(([itemCode, r])=>{
@@ -2583,7 +2583,7 @@ async function loadOverviewStats(){
     <div class="stat-card">
       <div class="label">มูลค่ารวมของเดือนนี้</div>
       <div class="value">${fmtMoney(grandAmount)}</div>
-      <div class="sub">บาท (ทุกสาขา / ทุกหมวด)</div>
+      <div class="sub">บาท (ทุกสาขา / FRESH FOOD + TRANSFER)</div>
     </div>
   `;
 }
@@ -3723,11 +3723,14 @@ async function computeCategorySums(month, storeFilter, isAdmin){
     if(data){
       Object.entries(data).forEach(([storeCode, rec])=>{
         let storeHasData = false;
+        // ── ตรวจสอบครบ 3 หมวด (รวม NONFRESH) เพื่อสถานะ "บันทึกแล้ว" ที่ถูกต้องตามประวัติ ──
+        // แต่รวมมูลค่าเฉพาะ FRESH/TRANSFER เพราะ NONFRESH เลิกใช้งานแล้วสำหรับเดือนปัจจุบัน/อนาคต
         ['FRESH','TRANSFER','NONFRESH'].forEach(cat=>{
           const catData = rec[cat];
           if(!catData) return;
           storesSeen.add(storeCode);
           storeHasData = true;
+          if(cat === 'NONFRESH') return;
           Object.entries(catData).forEach(([code, r])=>{
             const item = ITEM_MAP[cat][code] || placeholderItem(cat, code);
             sums[cat] += recordAmount(item, r);
@@ -3749,10 +3752,12 @@ async function computeCategorySums(month, storeFilter, isAdmin){
     const storeCode = storeFilter;
     const data = await dbGetOnce(`counts/${key}/${storeCode}`);
     if(data){
+      // เช่นเดียวกับ branch ด้านบน — ตรวจครบ 3 หมวดเพื่อ storesSeen แต่ไม่รวมมูลค่า NONFRESH
       ['FRESH','TRANSFER','NONFRESH'].forEach(cat=>{
         const catData = data[cat];
         if(!catData) return;
         storesSeen.add(storeCode);
+        if(cat === 'NONFRESH') return;
         Object.entries(catData).forEach(([code, r])=>{
           const item = ITEM_MAP[cat][code] || placeholderItem(cat, code);
           sums[cat] += recordAmount(item, r);
