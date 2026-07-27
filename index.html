@@ -843,6 +843,54 @@ tfoot td{
   .dash-split-col{ max-height: 320px; }
 }
 
+/* ---------- Store cost reference band ---------- */
+.ref-band-card{
+  background: var(--surface-2);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-md);
+  padding: 14px 18px;
+}
+.ref-band-row{
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+.ref-band-total{ min-width: 160px; }
+.ref-band-label{ font-size: 12px; color: var(--text-soft); font-weight: 600; }
+.ref-band-value{ font-size: 22px; font-weight: 800; color: var(--text); margin-top: 2px; }
+.ref-band-gauge-wrap{ flex: 1; min-width: 240px; }
+.ref-band-gauge-head{ margin-bottom: 6px; }
+.ref-band-gauge{
+  position: relative;
+  height: 10px;
+  border-radius: var(--radius-pill);
+  background: linear-gradient(to right, var(--warning-soft) 0%, var(--success-soft) 15%, var(--success-soft) 85%, var(--danger-soft) 100%);
+}
+.ref-band-gauge-avg-tick{
+  position: absolute;
+  top: -3px; bottom: -3px;
+  width: 2px;
+  background: var(--text-soft);
+  transform: translateX(-1px);
+}
+.ref-band-gauge-marker{
+  position: absolute;
+  top: -4px;
+  width: 12px; height: 18px;
+  border-radius: 3px;
+  transform: translateX(-6px);
+  border: 2px solid var(--surface);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.25);
+}
+.ref-band-gauge-scale{
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--text-faint);
+  margin-top: 4px;
+}
+
 </style>
 
 <!-- Firebase (compat SDK) -->
@@ -1321,9 +1369,11 @@ function buildExportRow(dateOrMonth, storeCode, cat, item, rec){
     'รหัสสินค้า': item.code,
     'รายการสินค้า': item.desc,
     'ผู้ขาย/Supplier': item.supplier,
-    'หน่วยนับ': item.uomCount,
-    [`จำนวน (${item.uomRec})`]: n ? n.qty : 0,
-    [`เศษ (${item.uomCount})`]: n ? n.subunit_qty : 0,
+    // หน่วยเก็บเป็นคอลัมน์ข้อมูล (ไม่ใช่ชื่อคอลัมน์) — ถ้าใส่ในชื่อคอลัมน์ แต่ละหน่วยจะกลายเป็นคอลัมน์ใหม่
+    'จำนวน': n ? n.qty : 0,
+    'หน่วยนับ (จำนวน)': item.uomRec || '',
+    'เศษ': n ? n.subunit_qty : 0,
+    'หน่วยนับ (เศษ)': item.uomCount || '',
     'รวม': total,
     'ราคาต่อหน่วยนับ (บาท)': Math.round(itemUnitCost(item)*100)/100,
     'มูลค่า (บาท)': Math.round(amount*100)/100
@@ -1560,8 +1610,10 @@ async function renderEntryView(){
 
       <div id="entryStatusBanner" class="mt-8"></div>
 
+      <div id="refBandPanel" class="mt-8"></div>
+
       <div class="tabs mt-8" id="catTabs">
-        ${['FRESH','TRANSFER'].map(c=>`
+        ${ACTIVE_CATS.map(c=>`
           <div class="tab ${c===CURRENT_CAT?'active':''} ${DIRTY[c]?'dirty':''}" data-cat="${c}">
             ${CAT_LABELS[c]} <span class="dot"></span>
           </div>`).join('')}
@@ -1589,7 +1641,10 @@ async function renderEntryView(){
 
       <div class="flex justify-between items-center mt-16" style="flex-wrap:wrap;gap:12px;">
         <div class="text-soft" id="entryTotals"></div>
-        <button class="btn btn-primary" id="saveEntryBtn">บันทึกข้อมูล (${CAT_LABELS[CURRENT_CAT]})</button>
+        <div class="flex items-center" style="gap:10px;flex-wrap:wrap;">
+          <button class="btn btn-danger" id="clearEntryBtn">ล้างข้อมูล (${CAT_LABELS[CURRENT_CAT]})</button>
+          <button class="btn btn-primary" id="saveEntryBtn">บันทึกข้อมูล (${CAT_LABELS[CURRENT_CAT]})</button>
+        </div>
       </div>
     </div>
   `;
@@ -1608,10 +1663,13 @@ async function renderEntryView(){
       renderEntryTable(CURRENT_ACTIVE); // ใช้ค่า active ที่ cache ไว้
       const btn = document.getElementById('saveEntryBtn');
       if(btn) btn.textContent = `บันทึกข้อมูล (${CAT_LABELS[CURRENT_CAT]})`;
+      const clrBtn = document.getElementById('clearEntryBtn');
+      if(clrBtn) clrBtn.textContent = `ล้างข้อมูล (${CAT_LABELS[CURRENT_CAT]})`;
     });
   });
 
   document.getElementById('saveEntryBtn').addEventListener('click', saveCategory);
+  document.getElementById('clearEntryBtn').addEventListener('click', confirmClearCategory);
   document.getElementById('exportTemplateBtn').addEventListener('click', exportEntryTemplate);
 
   // ── ค้นหาแบบ real-time (debounce เล็กน้อยเพื่อความลื่นไหล) ──
@@ -1675,6 +1733,7 @@ async function loadMonthData(){
   ENTRY_SAVED_BASELINE = { FRESH:{}, TRANSFER:{}, NONFRESH:{} };
   CURRENT_META = null;
   DIRTY = { FRESH:false, TRANSFER:false, NONFRESH:false };
+  REF_BAND_READY = false; // ยังไม่ครบทุกหมวดสำหรับเดือน/สาขานี้ — แสดง "กำลังโหลด..." จนกว่า Step 4 จะเสร็จ
 
   // Step 2: โหลด cache ของ months active (ถ้ายังไม่มี) — 1 round-trip เดียว
   if(!MONTHS_ACTIVE_CACHE) await loadMonthsCache();
@@ -1695,6 +1754,8 @@ async function loadMonthData(){
     // เก็บ snapshot ไว้เป็น baseline สำหรับเทียบการเปลี่ยนแปลง (deep copy ป้องกันการแก้ทับโดยไม่ตั้งใจ)
     ENTRY_SAVED_BASELINE = JSON.parse(JSON.stringify(CURRENT_DATA));
     CURRENT_META = fbData._meta || null;
+    // ครบทุกหมวดที่ active แล้ว (ดึงมาพร้อมกันจาก counts/{key}/{storeCode} เดียว) — คำนวณรวมยอดอ้างอิงได้จริง
+    REF_BAND_READY = true;
     // Refresh ตาราง + meta หลังได้ข้อมูลจาก Firebase
     renderEntryMeta();
     renderEntryTable(active);
@@ -1702,9 +1763,11 @@ async function loadMonthData(){
     console.warn('[loadMonthData] Firebase load error:', e.message);
   }
 
-  // ปุ่มบันทึก: active เสมอ เว้นแต่ admin ปิดเดือนนั้นไว้
+  // ปุ่มบันทึก/ล้างข้อมูล: active เสมอ เว้นแต่ admin ปิดเดือนนั้นไว้
   const saveBtn = document.getElementById('saveEntryBtn');
   if(saveBtn) saveBtn.disabled = !active;
+  const clearBtn = document.getElementById('clearEntryBtn');
+  if(clearBtn) clearBtn.disabled = !active;
 }
 
 function renderEntryStatusBanner(active){
@@ -1940,12 +2003,122 @@ function updateGrandTotals(){
     totalsEl.innerHTML = `กรอกแล้ว <b class="num">${filledCount}</b> / ${items.length} รายการ
       &nbsp;&middot;&nbsp; มูลค่ารวม <b class="num">${fmtMoney(totalAmount)}</b> บาท`;
   }
+
+  renderReferenceBand();
+}
+
+/* ---------- Store cost reference band: total + gauge ---------- */
+function computeActiveCategoriesTotal(){
+  let total = 0;
+  ACTIVE_CATS.forEach(cat=>{
+    Object.entries(CURRENT_DATA[cat] || {}).forEach(([code, rec])=>{
+      if(!rec) return;
+      const item = ITEM_MAP[cat][code] || placeholderItem(cat, code);
+      total += recordAmount(item, rec);
+    });
+  });
+  return total;
+}
+
+function renderReferenceBand(){
+  const el = document.getElementById('refBandPanel');
+  if(!el) return;
+
+  if(!REF_BAND_READY){
+    el.innerHTML = `<div class="ref-band-card"><div class="text-soft">กำลังโหลด...</div></div>`;
+    return;
+  }
+
+  const total = computeActiveCategoriesTotal();
+  const band = REFERENCE_BAND[SESSION.locNo];
+
+  if(!band){
+    el.innerHTML = `
+      <div class="ref-band-card">
+        <div class="ref-band-total">
+          <div class="ref-band-label">มูลค่ารวมที่นับได้</div>
+          <div class="ref-band-value num">฿${fmtMoney(total)}</div>
+        </div>
+        <div class="text-faint mt-8" style="font-size:12.5px;">ยังไม่มีข้อมูลอ้างอิงสำหรับสาขานี้</div>
+      </div>`;
+    return;
+  }
+
+  const { min, avg, max, months, period } = band;
+  let status, statusClass, markerColor;
+  if(total > max){ status = 'สูงกว่าค่าสูงสุด'; statusClass = 'pill-danger'; markerColor = 'var(--danger)'; }
+  else if(total < min){ status = 'ต่ำกว่าค่าต่ำสุด'; statusClass = 'pill-warning'; markerColor = 'var(--warning)'; }
+  else { status = 'อยู่ในช่วงปกติ'; statusClass = 'pill-success'; markerColor = 'var(--success)'; }
+
+  const range = (max - min) || 1; // กัน div-by-zero ถ้า min===max
+  const clampPct = p => Math.max(0, Math.min(100, p));
+  const avgPct = clampPct(((avg - min) / range) * 100);
+  const markerPct = clampPct(((total - min) / range) * 100);
+
+  el.innerHTML = `
+    <div class="ref-band-card">
+      <div class="ref-band-row">
+        <div class="ref-band-total">
+          <div class="ref-band-label">มูลค่ารวมที่นับได้</div>
+          <div class="ref-band-value num">฿${fmtMoney(total)}</div>
+        </div>
+        <div class="ref-band-gauge-wrap">
+          <div class="ref-band-gauge-head"><span class="pill ${statusClass}">${status}</span></div>
+          <div class="ref-band-gauge">
+            <div class="ref-band-gauge-avg-tick" style="left:${avgPct}%;" title="เฉลี่ย ฿${fmtMoney(avg)}"></div>
+            <div class="ref-band-gauge-marker" style="left:${markerPct}%;background:${markerColor};" title="รวม ฿${fmtMoney(total)}"></div>
+          </div>
+          <div class="ref-band-gauge-scale"><span>฿${fmtNum(min)}</span><span>฿${fmtNum(max)}</span></div>
+        </div>
+      </div>
+      <div class="text-faint mt-8" style="font-size:11.5px;">อ้างอิง ${escapeHtml(String(months))} เดือน (${escapeHtml(period)})</div>
+    </div>`;
 }
 
 function updateTabDots(){
   document.querySelectorAll('#catTabs .tab').forEach(t=>{
     t.classList.toggle('dirty', !!DIRTY[t.dataset.cat]);
   });
+}
+
+/* ============================================================
+   CLEAR (ล้างข้อมูลที่กรอกไว้ในหมวดปัจจุบัน — เฉพาะบนหน้าจอ)
+   ล้างเฉพาะ state ในหน่วยความจำ ยังไม่เขียน Firebase จนกว่าจะกด "บันทึกข้อมูล"
+   (ถ้ายังไม่บันทึก กด "โหลดข้อมูล" เพื่อดึงข้อมูลเดิมกลับมาได้)
+============================================================ */
+function confirmClearCategory(){
+  if(SAVE_IN_PROGRESS){ toast('กำลังบันทึกอยู่ กรุณารอสักครู่...', 'default'); return; }
+  if(!CURRENT_ACTIVE){ toast('เดือนนี้ยังไม่เปิดรับการบันทึก กรุณาติดต่อ Admin', 'error'); return; }
+
+  const cat = CURRENT_CAT;
+  const filled = Object.values(CURRENT_DATA[cat] || {}).filter(Boolean).length;
+  if(filled === 0){ toast('ไม่มีข้อมูลที่ต้องล้าง'); return; }
+
+  showModal(`
+    <h3>ยืนยันการล้างข้อมูล</h3>
+    <div class="text-soft" style="font-size:13px;margin-bottom:14px;">
+      ต้องการล้างข้อมูลที่กรอกไว้ในหมวด <b>${CAT_LABELS[cat]}</b> ทั้งหมดใช่หรือไม่?<br><br>
+      <b>เดือน:</b> ${thaiMonthLabel(CURRENT_MONTH)}<br>
+      <b>รายการที่มีข้อมูล:</b> <b class="num">${fmtNum(filled)}</b> รายการ<br><br>
+      <span class="pill pill-warning">ล้างเฉพาะบนหน้าจอ — ต้องกด "บันทึกข้อมูล" จึงจะมีผลจริง หากยังไม่บันทึก กด "โหลดข้อมูล" เพื่อเรียกข้อมูลเดิมกลับมาได้</span>
+    </div>
+    <div class="modal-actions">
+      <button class="btn btn-secondary" id="clrCancelBtn">ยกเลิก</button>
+      <button class="btn btn-danger" id="clrConfirmBtn">ล้างข้อมูล</button>
+    </div>
+  `, ()=>{
+    document.getElementById('clrCancelBtn').addEventListener('click', closeModal);
+    document.getElementById('clrConfirmBtn').addEventListener('click', ()=> clearCategoryInputs(cat));
+  });
+}
+
+function clearCategoryInputs(cat){
+  CURRENT_DATA[cat] = {};            // ล้าง state ในหน่วยความจำ
+  DIRTY[cat] = true;                 // ต่างจาก baseline แล้ว → ต้องกดบันทึกเพื่อยืนยัน
+  renderEntryTable(CURRENT_ACTIVE);  // input ว่าง + รวม/มูลค่ารายแถวเป็น 0 (เรียก updateGrandTotals() ต่อในตัว)
+  updateTabDots();
+  closeModal();
+  toast(`ล้างข้อมูลหมวด ${CAT_LABELS[cat]} แล้ว — กด "บันทึกข้อมูล" เพื่อยืนยัน`, 'success');
 }
 
 /* ============================================================
@@ -2094,25 +2267,19 @@ function exportEntryTemplate(){
   const items = ITEMS_BY_CAT[cat] || [];
   if(items.length === 0){ toast('ไม่มีรายการสินค้าในหมวดนี้', 'error'); return; }
 
-  const fields = ['จำนวน', 'เศษ'];
   const monthLabel = thaiMonthLabel(CURRENT_MONTH);
 
-  const headerRow = {
-    '#': '#', 'รหัสสินค้า':'รหัสสินค้า', 'รายการสินค้า':'รายการสินค้า', 'หน่วยนับ':'หน่วยนับ',
-  };
-  fields.forEach(f => { headerRow[f] = f; });
-  headerRow['รวม'] = 'รวม';
-  headerRow['หมายเหตุ'] = 'หมายเหตุ';
-
-  const rows = items.map((item, idx) => {
-    const row = {
-      '#': idx + 1, 'รหัสสินค้า': item.code, 'รายการสินค้า': item.desc, 'หน่วยนับ': item.uomCount,
-    };
-    fields.forEach(f => { row[f] = ''; });
-    row['รวม'] = '';
-    row['หมายเหตุ'] = '';
-    return row;
-  });
+  const rows = items.map((item, idx) => ({
+    '#': idx + 1,
+    'รหัสสินค้า': item.code,
+    'รายการสินค้า': item.desc,
+    'จำนวน': '',
+    'หน่วยนับ (จำนวน)': item.uomRec || '',
+    'เศษ': '',
+    'หน่วยนับ (เศษ)': item.uomCount || '',
+    'รวม': '',
+    'หมายเหตุ': ''
+  }));
 
   const sheetName = `${SESSION.locNo}_${CURRENT_MONTH}`.substring(0, 31);
   const filename  = `Template_${SESSION.locNo}_${SESSION.storeName.replace(/[^a-zA-Z0-9ก-๙]/g,'_').substring(0,20)}_${CURRENT_MONTH}.xlsx`;
@@ -2124,15 +2291,15 @@ function exportEntryTemplate(){
     [],
   ];
 
-  const colKeys = ['#', 'รหัสสินค้า', 'รายการสินค้า', 'หน่วยนับ', ...fields, 'รวม', 'หมายเหตุ'];
+  const colKeys = ['#','รหัสสินค้า','รายการสินค้า','จำนวน','หน่วยนับ (จำนวน)','เศษ','หน่วยนับ (เศษ)','รวม','หมายเหตุ'];
   const headerArr = colKeys;
   const dataArrs  = rows.map(r => colKeys.map(k => r[k]));
   const allArrs = [...titleRows, headerArr, ...dataArrs];
 
   const ws = XLSX.utils.aoa_to_sheet(allArrs);
   ws['!cols'] = [
-    { wch: 5 }, { wch: 18 }, { wch: 52 }, { wch: 14 },
-    ...fields.map(() => ({ wch: 10 })),
+    { wch: 5 }, { wch: 18 }, { wch: 52 },
+    { wch: 10 }, { wch: 16 }, { wch: 10 }, { wch: 16 },
     { wch: 10 }, { wch: 20 },
   ];
 
@@ -3023,7 +3190,8 @@ async function deleteRecord(idx){
 let ADMIN_ITEMS_CAT = 'FRESH';
 
 async function renderAdminItems(){
-  ADMIN_ITEMS_CAT = 'FRESH'; // รีเซ็ตเสมอ เนื่องจากแสดงเฉพาะ FRESH FOOD
+  // คงแท็บที่เลือกไว้ ถ้ายังเป็นหมวดที่ใช้งานอยู่ (กันหลุดกลับไป FRESH หลังเพิ่ม/แก้/ลบรายการ)
+  if(!ACTIVE_CATS.includes(ADMIN_ITEMS_CAT)) ADMIN_ITEMS_CAT = ACTIVE_CATS[0];
   setTopbar('รายการสินค้า (Item Master)', 'เพิ่ม / แก้ไข / ลบ รายการสินค้าในระบบ');
   const content = document.getElementById('content');
 
@@ -3037,7 +3205,7 @@ async function renderAdminItems(){
         <button class="btn btn-primary" id="addItemBtn">+ เพิ่มรายการสินค้า</button>
       </div>
       <div class="tabs" id="itemCatTabs">
-        ${['FRESH'].map(c=>`<div class="tab ${c===ADMIN_ITEMS_CAT?'active':''}" data-cat="${c}">${CAT_LABELS[c]} (${ITEMS_BY_CAT[c].length})</div>`).join('')}
+        ${ACTIVE_CATS.map(c=>`<div class="tab ${c===ADMIN_ITEMS_CAT?'active':''}" data-cat="${c}">${CAT_LABELS[c]} (${ITEMS_BY_CAT[c].length})</div>`).join('')}
       </div>
       <div class="table-wrap mt-12" id="itemsTableWrap"></div>
     </div>
@@ -3160,11 +3328,12 @@ async function saveItem(isEdit, oldCode){
 
   try{
     await dbSet(`items/${cat}/${code}`, newItem);
-    await dbPush('logs', {
+    // non-blocking — log ที่เขียนไม่สำเร็จต้องไม่ทำให้ UI แจ้ง error ทั้งที่บันทึกรายการสำเร็จแล้ว
+    dbPush('logs', {
       ts: Date.now(), date: todayStr(), store: '-', storeName: '-',
       user: SESSION.username, action: isEdit ? 'ITEM_EDIT' : 'ITEM_ADD',
       category: cat, changes: [{ itemCode: code, itemDesc: desc, field: '-', oldVal: '-', newVal: '-' }]
-    });
+    }).catch(e=> console.warn('[saveItem] log error:', e.message));
 
     if(isEdit){
       const idx = ITEMS_BY_CAT[cat].findIndex(i=>i.code===code);
@@ -3207,11 +3376,12 @@ async function deleteItem(code){
   const item = ITEM_MAP[cat][code];
   try{
     await dbRemove(`items/${cat}/${code}`);
-    await dbPush('logs', {
+    // non-blocking — เช่นเดียวกับ saveItem()
+    dbPush('logs', {
       ts: Date.now(), date: todayStr(), store: '-', storeName: '-',
       user: SESSION.username, action: 'ITEM_DELETE',
       category: cat, changes: [{ itemCode: code, itemDesc: item.desc, field: '-', oldVal: '-', newVal: '-' }]
-    });
+    }).catch(e=> console.warn('[deleteItem] log error:', e.message));
 
     ITEMS_BY_CAT[cat] = ITEMS_BY_CAT[cat].filter(i=>i.code!==code);
     delete ITEM_MAP[cat][code];
@@ -3913,6 +4083,22 @@ let ITEMS_BY_CAT = { FRESH: [], TRANSFER: [], NONFRESH: [] };
 let ITEM_MAP = { FRESH: {}, TRANSFER: {}, NONFRESH: {} };
 let CURRENT_VIEW = null;
 
+const ACTIVE_CATS = ['FRESH','TRANSFER']; // NONFRESH retired from active counting
+
+// ---------- Store cost reference band ----------
+let REFERENCE_BAND = {};      // { locNo: { avg, min, max, months, period, source } }
+let REF_BAND_READY = false;   // true once ACTIVE_CATS are all loaded for the current month/store
+
+async function loadReferenceBand(){
+  try{
+    const res = await fetch('store_reference_band_packaging.json');
+    REFERENCE_BAND = await res.json();
+  }catch(e){
+    console.warn('[loadReferenceBand] could not load reference bands — none available:', e.message);
+    REFERENCE_BAND = {};
+  }
+}
+
 const STORE_NAV = [
   { id:'dashboard', label:'แดชบอร์ด',            icon:'📊' },
   { id:'entry',   label:'บันทึกการตรวจนับ',     icon:'📝' },
@@ -3983,6 +4169,9 @@ async function startApp(){
 
   // Step 2: โหลด months active cache (1 round-trip สำหรับ active status ทั้งหมด)
   await loadMonthsCache();
+
+  // Step 2b: โหลด reference band ของสาขา (ไม่ block ถ้าโหลดไม่สำเร็จ — จะกลายเป็น {})
+  await loadReferenceBand();
 
   // Step 3: sync Firebase items ใน background (ไม่ block UI)
   loadItemsFromDB().catch(e=> console.warn('[startApp] Firebase items sync error:', e.message));
