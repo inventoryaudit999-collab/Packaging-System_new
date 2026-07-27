@@ -4092,7 +4092,27 @@ let REF_BAND_READY = false;   // true once ACTIVE_CATS are all loaded for the cu
 async function loadReferenceBand(){
   try{
     const res = await fetch('store_reference_band_packaging.json');
-    REFERENCE_BAND = await res.json();
+    const raw = await res.json();
+
+    // ── Guard: กันข้อมูล placeholder / ไม่ครบ / ไม่ใช่ตัวเลข ถูกใช้แทนข้อมูลจริงโดยไม่รู้ตัว ──
+    // entry ที่ไม่ผ่านจะถูกตัดทิ้ง (ไม่เก็บไว้) — สาขานั้นจะแสดง "ยังไม่มีข้อมูลอ้างอิงสำหรับสาขานี้"
+    // ซึ่งถูกต้องกว่าการแสดงช่วงอ้างอิงที่ดูสมเหตุสมผลแต่ผิด
+    const REQUIRED = ['avg','min','max','months','period'];
+    const isNum = v => v !== '' && v !== null && v !== undefined && Number.isFinite(Number(v));
+    const clean = {};
+    let dropped = 0;
+    Object.entries(raw || {}).forEach(([loc, band])=>{
+      if(!band || typeof band !== 'object'){ dropped++; return; }
+      if(String(band.source || '').toLowerCase().includes('placeholder')){ dropped++; return; }
+      if(REQUIRED.some(f => band[f] === undefined || band[f] === null)){ dropped++; return; }
+      if(!['avg','min','max'].every(f => isNum(band[f]))){ dropped++; return; }
+      clean[loc] = band;
+    });
+
+    REFERENCE_BAND = clean;
+    if(dropped > 0){
+      console.warn(`[loadReferenceBand] dropped ${dropped} invalid/placeholder reference band entries — those stores will show "ยังไม่มีข้อมูลอ้างอิงสำหรับสาขานี้"`);
+    }
   }catch(e){
     console.warn('[loadReferenceBand] could not load reference bands — none available:', e.message);
     REFERENCE_BAND = {};
