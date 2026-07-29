@@ -1019,7 +1019,7 @@ const db = firebase.database();
 // NOTE: '.info/connected' is a synthetic client-only path and must NEVER
 // be prefixed — it does not exist under any root in the database.
 // ============================================================
-const DB_ROOT = 'demo';
+const DB_ROOT = ''; // production: reads/writes the real root (counts/, settings/). Use 'demo' only for dev.
 function scopedPath(path){ return DB_ROOT ? `${DB_ROOT}/${path}` : path; }
 
 
@@ -1178,16 +1178,21 @@ async function dbUpdate(updates, retries=3){
   throw lastErr;
 }
 
+// Returns true if the value actually reached Firebase, false if it only landed
+// in the localStorage fallback (PERMISSION_DENIED). Callers that must confirm a
+// write propagated to other clients (e.g. month activation) MUST check the
+// result — a false here means "saved on this device only, no one else sees it".
 async function dbSet(path, val){
   const fullPath = scopedPath(path);
   try{
     await db.ref(fullPath).set(val);
     if(val === null) lsDel(fullPath); else lsSet(fullPath, val);
+    return true;
   }catch(e){
     if(e.code === 'PERMISSION_DENIED' || String(e.message).includes('Permission denied')){
       console.warn('[dbSet] PERMISSION_DENIED for:', fullPath, '— saving to localStorage fallback');
       if(val === null) lsDel(fullPath); else lsSet(fullPath, val);
-      return; // ไม่ throw
+      return false; // ไม่ throw — แต่แจ้งกลับว่าไม่ถึง Firebase
     }
     throw e;
   }
@@ -2547,8 +2552,18 @@ async function setMonthStatus(active){
     MONTHS_ACTIVE_CACHE[key] = active;
     lsSet(scopedPath('settings/months'), MONTHS_ACTIVE_CACHE); // sync to LS
 
-    // บันทึกลง Firebase (dbSet จะ fallback to LS ถ้า PERMISSION_DENIED)
-    await dbSet(`settings/months/${key}`, active);
+    // บันทึกลง Firebase — ต้องยืนยันว่าเขียนถึง Firebase จริง ไม่ใช่แค่ localStorage
+    const wrote = await dbSet(`settings/months/${key}`, active);
+    if(!wrote){
+      // PERMISSION_DENIED: เขียนได้แค่เครื่องนี้ สาขาอื่นจะไม่เห็นสถานะนี้เลย
+      // ⇒ rollback optimistic update แล้วแจ้งเตือนแทนที่จะหลอกว่าสำเร็จ
+      MONTHS_ACTIVE_CACHE[key] = !active;
+      lsSet(scopedPath('settings/months'), MONTHS_ACTIVE_CACHE);
+      const rulesCard = document.getElementById('firebaseRulesCard');
+      if(rulesCard) rulesCard.style.display = '';
+      toast('⚠️ บันทึกไม่ถึงเซิร์ฟเวอร์ (Firebase Rules ปฏิเสธ path "settings") — สถานะเดือนจะเห็นแค่เครื่องนี้ สาขาอื่นยังไม่เห็น กรุณาแก้ Rules ตามคำแนะนำด้านล่าง', 'error');
+      return;
+    }
 
     // บันทึก log (non-blocking)
     dbPush('logs', {
@@ -2632,7 +2647,17 @@ async function setMonthStatusDirect(month, active){
     MONTHS_ACTIVE_CACHE[key] = active;
     lsSet(scopedPath('settings/months'), MONTHS_ACTIVE_CACHE);
 
-    await dbSet(`settings/months/${key}`, active);
+    const wrote = await dbSet(`settings/months/${key}`, active);
+    if(!wrote){
+      // PERMISSION_DENIED: เขียนได้แค่เครื่องนี้ ⇒ rollback แล้วแจ้งเตือน
+      MONTHS_ACTIVE_CACHE[key] = !active;
+      lsSet(scopedPath('settings/months'), MONTHS_ACTIVE_CACHE);
+      const rulesCard = document.getElementById('firebaseRulesCard');
+      if(rulesCard) rulesCard.style.display = '';
+      toast('⚠️ บันทึกไม่ถึงเซิร์ฟเวอร์ (Firebase Rules ปฏิเสธ path "settings") — สถานะเดือนจะเห็นแค่เครื่องนี้ สาขาอื่นยังไม่เห็น กรุณาแก้ Rules', 'error');
+      await loadAllMonthStatuses();
+      return;
+    }
 
     dbPush('logs', {
       ts: Date.now(), month, store: '-', storeName: '-',
